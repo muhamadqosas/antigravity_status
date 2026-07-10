@@ -202,6 +202,44 @@
   .btn-cancel:hover{ background:#2a1c1a; }
   .btn[disabled]{ opacity:0.35; cursor:not-allowed; transform:none; }
 
+  .btn-delete-toggle{
+    flex:0 0 auto; width:38px; height:38px; padding:0; font-size:15px;
+    border-color:#4a2c2c; color:var(--red);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .btn-delete-toggle:hover{ background:#2a1414; }
+  .btn-delete-toggle.active{ background:var(--red); color:#fff; border-color:var(--red); font-weight:700; }
+
+  .card.delete-mode .card-top{ padding-right:28px; }
+  .delete-account-btn{
+    position:absolute; top:10px; right:10px; z-index:5;
+    width:26px; height:26px; border-radius:8px;
+    border:1px solid #4a2c2c; background:#2a1414; color:var(--red);
+    display:flex; align-items:center; justify-content:center;
+    font-size:13px; line-height:1; cursor:pointer; transition:all .15s;
+  }
+  .delete-account-btn:hover{ background:var(--red); color:#fff; transform:scale(1.08); }
+
+  .modal.modal-danger p{ color:#f2b4ad; }
+  .modal.modal-danger h3{ color:var(--red); }
+  .modal-danger-box{
+    background:#2a1414; border:1px solid #4a2c2c; border-radius:10px;
+    padding:12px 14px; font-size:12px; color:#f2b4ad; line-height:1.6;
+    margin-bottom:16px; font-family:'Space Mono',monospace;
+  }
+  .btn-danger-confirm{ background:var(--red); color:#fff; border-color:var(--red); font-weight:700; }
+  .btn-danger-confirm:hover{ filter:brightness(1.1); }
+
+  .modal.modal-warn p{ color:#f7d9ab; }
+  .modal.modal-warn h3{ color:var(--amber); }
+  .modal-warn-box{
+    background:#3d3220; border:1px solid #6b5528; border-radius:10px;
+    padding:12px 14px; font-size:12px; color:#f7d9ab; line-height:1.6;
+    margin-bottom:16px; font-family:'Space Mono',monospace;
+  }
+  .btn-warn-confirm{ background:var(--amber); color:#2b1e05; border-color:var(--amber); font-weight:700; }
+  .btn-warn-confirm:hover{ filter:brightness(1.08); }
+
   .empty-state{
     max-width:1280px; margin:60px auto; text-align:center; color:var(--text-faint);
     font-family:'Space Mono',monospace; font-size:13px;
@@ -298,6 +336,7 @@
     <button class="filter-btn" data-filter="waiting">Cooldown</button>
   </div>
   <button class="btn btn-primary" id="addAccountBtn" style="flex:0 0 auto; padding:10px 16px; font-size:12.5px;">+ Tambah Akun</button>
+  <button class="btn btn-delete-toggle" id="deleteModeBtn" title="Aktifkan/nonaktifkan mode hapus akun">🗑</button>
 </div>
 
 <div class="grid" id="grid"></div>
@@ -339,6 +378,36 @@
   </div>
 </div>
 
+<!-- Modal konfirmasi hapus akun -->
+<div class="modal-overlay" id="deleteConfirmOverlay">
+  <div class="modal modal-danger">
+    <h3>⚠ Hapus akun ini?</h3>
+    <p id="deleteConfirmSub">username@gmail.com</p>
+    <div class="modal-danger-box">
+      Tindakan ini akan menghapus akun beserta data cooldown-nya secara permanen dan tidak bisa dibatalkan.
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-manual" id="deleteConfirmCancelBtn" style="flex:1;">Batal</button>
+      <button class="btn btn-danger-confirm" id="deleteConfirmYesBtn" style="flex:1;">Ya, Hapus</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal konfirmasi batal cooldown -->
+<div class="modal-overlay" id="cancelConfirmOverlay">
+  <div class="modal modal-warn">
+    <h3>⚠ Batalkan cooldown ini?</h3>
+    <p id="cancelConfirmSub">username@gmail.com</p>
+    <div class="modal-warn-box">
+      Timer cooldown akun ini akan direset dan statusnya langsung berubah jadi "Ready".
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-manual" id="cancelConfirmCancelBtn" style="flex:1;">Tutup</button>
+      <button class="btn btn-warn-confirm" id="cancelConfirmYesBtn" style="flex:1;">Ya, Batalkan</button>
+    </div>
+  </div>
+</div>
+
 <script>
 /* =========================================================
    CONFIG — isi ini sebelum di-push ke GitHub Pages
@@ -373,6 +442,7 @@ const BASE_ACCOUNTS = [
 ];
 
 const CUSTOM_ACCOUNTS_KEY = "account_grid_custom_accounts_v1";
+const DELETED_BASE_ACCOUNTS_KEY = "account_grid_deleted_base_v1";
 const AVATAR_COLORS = ["#e0672c","#c0392b","#8e44ad","#6c6fd1","#5b7a9d","#8a7b2e","#8b6753","#5c3a2e","#2e86c1","#e67e22","#6e4b3a","#1a6b5b","#d64545","#17a398","#2ecc71","#d35400","#7f8c8d","#c2185b"];
 
 function loadCustomAccounts(){
@@ -386,11 +456,23 @@ function saveCustomAccounts(list){
   try{ localStorage.setItem(CUSTOM_ACCOUNTS_KEY, JSON.stringify(list)); }catch(e){}
 }
 
+function loadDeletedBaseIds(){
+  try{
+    const raw = localStorage.getItem(DELETED_BASE_ACCOUNTS_KEY);
+    if(raw) return JSON.parse(raw);
+  }catch(e){}
+  return [];
+}
+function saveDeletedBaseIds(list){
+  try{ localStorage.setItem(DELETED_BASE_ACCOUNTS_KEY, JSON.stringify(list)); }catch(e){}
+}
+
 let customAccounts = loadCustomAccounts();
-let ACCOUNTS = BASE_ACCOUNTS.concat(customAccounts);
+let deletedBaseIds = loadDeletedBaseIds();
+let ACCOUNTS = BASE_ACCOUNTS.filter(a => !deletedBaseIds.includes(a.id)).concat(customAccounts);
 
 function rebuildAccounts(){
-  ACCOUNTS = BASE_ACCOUNTS.concat(customAccounts);
+  ACCOUNTS = BASE_ACCOUNTS.filter(a => !deletedBaseIds.includes(a.id)).concat(customAccounts);
 }
 
 function addNewAccount(username, displayName){
@@ -404,6 +486,20 @@ function addNewAccount(username, displayName){
   saveLocalCache();
 }
 
+function deleteAccount(id){
+  const customIdx = customAccounts.findIndex(a => a.id === id);
+  if(customIdx !== -1){
+    customAccounts.splice(customIdx, 1);
+    saveCustomAccounts(customAccounts);
+  } else if(!deletedBaseIds.includes(id)){
+    deletedBaseIds.push(id);
+    saveDeletedBaseIds(deletedBaseIds);
+  }
+  delete state[id];
+  rebuildAccounts();
+  saveLocalCache();
+}
+
 /* =========================================================
    STATE
    ========================================================= */
@@ -412,6 +508,9 @@ let state = {};
 let currentFilter = "all";
 let currentSearch = "";
 let modalTargetId = null;
+let deleteMode = false;
+let deleteTargetId = null;
+let cancelTargetId = null;
 
 function initialState(){
   const s = {};
@@ -489,9 +588,11 @@ function render(){
     const limitBtn = document.getElementById(`limit-${cssSafe(a.id)}`);
     const manualBtn = document.getElementById(`manual-${cssSafe(a.id)}`);
     const cancelBtn = document.getElementById(`cancel-${cssSafe(a.id)}`);
+    const delBtn = document.getElementById(`del-${cssSafe(a.id)}`);
     if(limitBtn) limitBtn.onclick = () => setLimit(a.id);
     if(manualBtn) manualBtn.onclick = () => openManualModal(a.id);
-    if(cancelBtn) cancelBtn.onclick = () => cancelCountdown(a.id);
+    if(cancelBtn) cancelBtn.onclick = () => openCancelConfirm(a.id);
+    if(delBtn) delBtn.onclick = () => openDeleteConfirm(a.id);
   });
 }
 
@@ -506,13 +607,17 @@ function cardHTML(a){
     ? (a.isReady ? `Selesai: ${fmtTargetDate(a.target)}` : `Target ready: ${fmtTargetDate(a.target)}`)
     : "Belum ada limit tercatat";
   const safe = cssSafe(a.id);
+  const deleteBtnHTML = deleteMode
+    ? `<button class="delete-account-btn" id="del-${safe}" title="Hapus akun ini">🗑</button>`
+    : "";
 
   return `
-  <div class="card ${statusClass}">
+  <div class="card ${statusClass} ${deleteMode ? "delete-mode" : ""}">
+    ${deleteBtnHTML}
     <div class="card-top">
       <div class="avatar" style="background:${a.color}">${initials(a.name)}</div>
       <div class="id-block">
-        <div class="id-username">${a.id}</div>
+        <div class="id-username">${email}</div>
         <div class="id-name">${a.name}</div>
       </div>
     </div>
@@ -677,6 +782,62 @@ document.getElementById("addModalSaveBtn").onclick = () => {
   closeAddAccountModal();
   render();
   persist();
+};
+
+/* =========================================================
+   MODE HAPUS AKUN
+   ========================================================= */
+document.getElementById("deleteModeBtn").onclick = () => {
+  deleteMode = !deleteMode;
+  document.getElementById("deleteModeBtn").classList.toggle("active", deleteMode);
+  render();
+};
+
+function openDeleteConfirm(id){
+  deleteTargetId = id;
+  const acc = ACCOUNTS.find(a => a.id === id);
+  if(!acc) return;
+  document.getElementById("deleteConfirmSub").textContent = acc.id + "@gmail.com";
+  document.getElementById("deleteConfirmOverlay").classList.add("open");
+}
+function closeDeleteConfirm(){
+  document.getElementById("deleteConfirmOverlay").classList.remove("open");
+  deleteTargetId = null;
+}
+document.getElementById("deleteConfirmCancelBtn").onclick = closeDeleteConfirm;
+document.getElementById("deleteConfirmOverlay").addEventListener("click", (e) => {
+  if(e.target.id === "deleteConfirmOverlay") closeDeleteConfirm();
+});
+document.getElementById("deleteConfirmYesBtn").onclick = () => {
+  if(!deleteTargetId) return;
+  deleteAccount(deleteTargetId);
+  closeDeleteConfirm();
+  render();
+  persist();
+};
+
+/* =========================================================
+   KONFIRMASI BATAL COOLDOWN
+   ========================================================= */
+function openCancelConfirm(id){
+  cancelTargetId = id;
+  const acc = ACCOUNTS.find(a => a.id === id);
+  if(!acc) return;
+  document.getElementById("cancelConfirmSub").textContent = acc.id + "@gmail.com";
+  document.getElementById("cancelConfirmOverlay").classList.add("open");
+}
+function closeCancelConfirm(){
+  document.getElementById("cancelConfirmOverlay").classList.remove("open");
+  cancelTargetId = null;
+}
+document.getElementById("cancelConfirmCancelBtn").onclick = closeCancelConfirm;
+document.getElementById("cancelConfirmOverlay").addEventListener("click", (e) => {
+  if(e.target.id === "cancelConfirmOverlay") closeCancelConfirm();
+});
+document.getElementById("cancelConfirmYesBtn").onclick = () => {
+  if(!cancelTargetId) return;
+  cancelCountdown(cancelTargetId);
+  closeCancelConfirm();
 };
 
 /* =========================================================
