@@ -184,7 +184,7 @@
   .status-ready .status-badge{ background:var(--green-dim); color:var(--green); }
   .status-waiting .status-badge{ background:var(--amber-dim); color:var(--amber); }
 
-  .target-line{ font-size:10.5px; color:var(--text-faint); font-family:'Space Mono',monospace; }
+  .target-line{ font-size:11px; color:var(--text-dim); font-family:'Space Mono',monospace; font-weight:500; }
 
   .actions{ display:flex; gap:6px; }
   .btn{
@@ -219,10 +219,27 @@
   }
   .modal h3{ margin:0 0 4px; font-size:15px; }
   .modal p{ margin:0 0 16px; font-size:12px; color:var(--text-dim); font-family:'Space Mono',monospace; }
-  .modal input[type="datetime-local"]{
+  .modal input[type="datetime-local"],
+  .modal input[type="text"]{
     width:100%; background:var(--surface-2); border:1px solid var(--border);
     border-radius:8px; padding:10px; color:var(--text); font-family:'Space Mono',monospace;
-    font-size:13px; margin-bottom:16px;
+    font-size:13px; margin-bottom:6px;
+  }
+  .modal input[type="datetime-local"]{ margin-bottom:16px; }
+  .modal input:focus{ outline:none; border-color:var(--violet); }
+  .modal-label{
+    display:block; font-size:10.5px; color:var(--text-faint); font-family:'Space Mono',monospace;
+    letter-spacing:0.4px; text-transform:uppercase; margin-bottom:6px;
+  }
+  .duration-hint{
+    font-size:11px; font-family:'Space Mono',monospace; color:var(--text-dim);
+    margin:-2px 0 14px; min-height:14px;
+  }
+  .duration-hint.ok{ color:var(--green); }
+  .duration-hint.err{ color:var(--red); }
+  .add-modal-error{
+    font-size:11px; font-family:'Space Mono',monospace; color:var(--red);
+    margin:-2px 0 14px; min-height:14px;
   }
   .modal-actions{ display:flex; gap:8px; }
   .modal-actions .btn{ padding:10px; font-size:12.5px; }
@@ -280,6 +297,7 @@
     <button class="filter-btn" data-filter="ready">Ready</button>
     <button class="filter-btn" data-filter="waiting">Cooldown</button>
   </div>
+  <button class="btn btn-primary" id="addAccountBtn" style="flex:0 0 auto; padding:10px 16px; font-size:12.5px;">+ Tambah Akun</button>
 </div>
 
 <div class="grid" id="grid"></div>
@@ -292,10 +310,31 @@
   <div class="modal">
     <h3 id="modalTitle">Atur waktu manual</h3>
     <p id="modalSub">username@gmail.com</p>
+    <label class="modal-label" for="manualDurationInput">Paste format limit (mis. 167h50m42s)</label>
+    <input type="text" id="manualDurationInput" placeholder="contoh: 167h50m42s atau 2d5h30m" autocomplete="off">
+    <div class="duration-hint" id="durationHint">&nbsp;</div>
+    <label class="modal-label" for="manualDateInput">Atau pilih tanggal &amp; jam</label>
     <input type="datetime-local" id="manualDateInput">
     <div class="modal-actions">
       <button class="btn btn-manual" id="modalCancelBtn" style="flex:1;">Batal</button>
       <button class="btn btn-primary" id="modalSaveBtn" style="flex:1;">Simpan</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal tambah akun -->
+<div class="modal-overlay" id="addModalOverlay">
+  <div class="modal">
+    <h3>Tambah akun baru</h3>
+    <p>Isi username unik &amp; nama tampilan</p>
+    <label class="modal-label" for="newAccUsername">Username (dipakai jadi ID)</label>
+    <input type="text" id="newAccUsername" placeholder="contoh: qosaswardani99" autocomplete="off">
+    <label class="modal-label" for="newAccName">Nama tampilan</label>
+    <input type="text" id="newAccName" placeholder="contoh: Qosas Wardani" autocomplete="off">
+    <div class="add-modal-error" id="addModalError">&nbsp;</div>
+    <div class="modal-actions">
+      <button class="btn btn-manual" id="addModalCancelBtn" style="flex:1;">Batal</button>
+      <button class="btn btn-primary" id="addModalSaveBtn" style="flex:1;">Tambah</button>
     </div>
   </div>
 </div>
@@ -316,7 +355,7 @@ const LOCAL_CACHE_KEY = "account_grid_cache_v1";
 /* =========================================================
    DAFTAR AKUN (edit bebas: tambah / hapus / ganti nama & warna)
    ========================================================= */
-const ACCOUNTS = [
+const BASE_ACCOUNTS = [
   { id:"ad4392879",           name:"ahmad dani",              color:"#e0672c" },
   { id:"fatturama59",         name:"Pemula Live Gaming",       color:"#c0392b" },
   { id:"mqosas123",           name:"M Qosas W",                color:"#8e44ad" },
@@ -332,6 +371,38 @@ const ACCOUNTS = [
   { id:"qosasworkspace",      name:"Qosas Workspace",          color:"#d64545" },
   { id:"student.mercubuana",  name:"MUHAMAD QOSAS WARDANI",    color:"#17a398" },
 ];
+
+const CUSTOM_ACCOUNTS_KEY = "account_grid_custom_accounts_v1";
+const AVATAR_COLORS = ["#e0672c","#c0392b","#8e44ad","#6c6fd1","#5b7a9d","#8a7b2e","#8b6753","#5c3a2e","#2e86c1","#e67e22","#6e4b3a","#1a6b5b","#d64545","#17a398","#2ecc71","#d35400","#7f8c8d","#c2185b"];
+
+function loadCustomAccounts(){
+  try{
+    const raw = localStorage.getItem(CUSTOM_ACCOUNTS_KEY);
+    if(raw) return JSON.parse(raw);
+  }catch(e){}
+  return [];
+}
+function saveCustomAccounts(list){
+  try{ localStorage.setItem(CUSTOM_ACCOUNTS_KEY, JSON.stringify(list)); }catch(e){}
+}
+
+let customAccounts = loadCustomAccounts();
+let ACCOUNTS = BASE_ACCOUNTS.concat(customAccounts);
+
+function rebuildAccounts(){
+  ACCOUNTS = BASE_ACCOUNTS.concat(customAccounts);
+}
+
+function addNewAccount(username, displayName){
+  const id = username.trim().toLowerCase();
+  const name = displayName.trim();
+  const color = AVATAR_COLORS[(BASE_ACCOUNTS.length + customAccounts.length) % AVATAR_COLORS.length];
+  customAccounts.push({ id, name, color });
+  saveCustomAccounts(customAccounts);
+  rebuildAccounts();
+  if(!state[id]) state[id] = { target: null };
+  saveLocalCache();
+}
 
 /* =========================================================
    STATE
@@ -484,7 +555,11 @@ function openManualModal(id){
   const input = document.getElementById("manualDateInput");
   const defaultDate = new Date(Date.now() + RESET_DAYS*86400000);
   input.value = toLocalInputValue(defaultDate);
+  const durInput = document.getElementById("manualDurationInput");
+  durInput.value = "";
+  setDurationHint("", "");
   document.getElementById("modalOverlay").classList.add("open");
+  durInput.focus();
 }
 
 function toLocalInputValue(date){
@@ -497,6 +572,48 @@ function closeModal(){
   modalTargetId = null;
 }
 
+/* =========================================================
+   PARSE FORMAT DURASI (mis. "167h50m42s", "2d5h30m", "45m")
+   ========================================================= */
+function parseDurationToMs(str){
+  if(!str) return null;
+  const clean = str.trim().toLowerCase().replace(/\s+/g,"");
+  if(!clean) return null;
+  const re = /^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/;
+  const match = clean.match(re);
+  if(!match) return null;
+  const [, d, h, m, s] = match;
+  if(!d && !h && !m && !s) return null; // tidak ada satuan yang cocok sama sekali
+  const days = parseInt(d || 0, 10);
+  const hours = parseInt(h || 0, 10);
+  const mins = parseInt(m || 0, 10);
+  const secs = parseInt(s || 0, 10);
+  return (((days*24 + hours)*60 + mins)*60 + secs) * 1000;
+}
+
+function setDurationHint(text, mode){
+  const el = document.getElementById("durationHint");
+  el.textContent = text || "\u00A0";
+  el.classList.remove("ok","err");
+  if(mode) el.classList.add(mode);
+}
+
+document.getElementById("manualDurationInput").addEventListener("input", (e) => {
+  const raw = e.target.value;
+  const ms = parseDurationToMs(raw);
+  if(raw.trim() === ""){
+    setDurationHint("", "");
+    return;
+  }
+  if(ms === null){
+    setDurationHint("Format tidak dikenali. Pakai contoh: 167h50m42s", "err");
+    return;
+  }
+  const target = new Date(Date.now() + ms);
+  document.getElementById("manualDateInput").value = toLocalInputValue(target);
+  setDurationHint(`Ready pada: ${fmtTargetDate(target.getTime())}`, "ok");
+});
+
 document.getElementById("modalCancelBtn").onclick = closeModal;
 document.getElementById("modalOverlay").addEventListener("click", (e) => {
   if(e.target.id === "modalOverlay") closeModal();
@@ -508,6 +625,56 @@ document.getElementById("modalSaveBtn").onclick = () => {
   const ts = new Date(val).getTime();
   state[modalTargetId] = { target: ts };
   closeModal();
+  render();
+  persist();
+};
+
+/* =========================================================
+   MODAL TAMBAH AKUN
+   ========================================================= */
+function openAddAccountModal(){
+  document.getElementById("newAccUsername").value = "";
+  document.getElementById("newAccName").value = "";
+  setAddModalError("");
+  document.getElementById("addModalOverlay").classList.add("open");
+  document.getElementById("newAccUsername").focus();
+}
+function closeAddAccountModal(){
+  document.getElementById("addModalOverlay").classList.remove("open");
+}
+function setAddModalError(text){
+  document.getElementById("addModalError").textContent = text || "\u00A0";
+}
+
+document.getElementById("addAccountBtn").onclick = openAddAccountModal;
+document.getElementById("addModalCancelBtn").onclick = closeAddAccountModal;
+document.getElementById("addModalOverlay").addEventListener("click", (e) => {
+  if(e.target.id === "addModalOverlay") closeAddAccountModal();
+});
+document.getElementById("addModalSaveBtn").onclick = () => {
+  const usernameRaw = document.getElementById("newAccUsername").value;
+  const nameRaw = document.getElementById("newAccName").value;
+  const username = usernameRaw.trim();
+  const name = nameRaw.trim();
+  if(!username){
+    setAddModalError("Username wajib diisi.");
+    return;
+  }
+  if(!/^[a-zA-Z0-9._]+$/.test(username)){
+    setAddModalError("Username hanya boleh huruf, angka, titik, underscore.");
+    return;
+  }
+  const id = username.toLowerCase();
+  if(ACCOUNTS.some(a => a.id === id)){
+    setAddModalError("Username ini sudah ada di daftar.");
+    return;
+  }
+  if(!name){
+    setAddModalError("Nama tampilan wajib diisi.");
+    return;
+  }
+  addNewAccount(username, name);
+  closeAddAccountModal();
   render();
   persist();
 };
