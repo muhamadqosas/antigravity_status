@@ -87,6 +87,17 @@
   .sync-indicator.busy .led{ background:var(--amber); animation:blink 1s infinite; }
   @keyframes blink{ 50%{opacity:0.25;} }
 
+  /* ---------- Tab bar (Antigravity / Gemini CLI) ---------- */
+  .tab-bar{ max-width:1280px; margin:16px auto 0; padding:0 24px; }
+  .tab-bar-inner{ display:flex; gap:4px; border-bottom:1px solid var(--border); }
+  .tab-btn{
+    font-family:'Space Mono',monospace; font-size:12.5px; font-weight:600;
+    padding:11px 18px; border:none; background:transparent; color:var(--text-dim);
+    cursor:pointer; border-bottom:2px solid transparent; transition:all .15s;
+  }
+  .tab-btn:hover{ color:var(--text); }
+  .tab-btn.active{ color:var(--violet); border-bottom-color:var(--violet); }
+
   /* ---------- Setup banner ---------- */
   .setup-banner{
     max-width:1280px; margin:20px auto 0; padding:0 24px;
@@ -200,7 +211,14 @@
   .btn-manual:hover{ background:#20242e; }
   .btn-cancel{ color:var(--red); }
   .btn-cancel:hover{ background:#2a1c1a; }
+  .btn-key{ border-color:#2c3a4a; color:#5aa9e6; }
+  .btn-key:hover{ background:#182430; }
+  .btn-copy{ border-color:#2c4a3a; color:var(--green); }
+  .btn-copy:hover{ background:#16241c; }
   .btn[disabled]{ opacity:0.35; cursor:not-allowed; transform:none; }
+  .apikey-line{ font-size:11px; color:var(--text-dim); font-family:'Space Mono',monospace; }
+  .apikey-mask{ color:var(--text); font-weight:700; }
+  .apikey-empty{ color:var(--text-faint); font-style:italic; }
 
   .btn-delete-toggle{
     flex:0 0 auto; width:38px; height:38px; padding:0; font-size:15px;
@@ -314,6 +332,13 @@
   </div>
 </header>
 
+<div class="tab-bar">
+  <div class="tab-bar-inner">
+    <button class="tab-btn active" data-tab="antigravity" id="tabAntigravity">Antigravity</button>
+    <button class="tab-btn" data-tab="gemini" id="tabGemini">Gemini CLI</button>
+  </div>
+</div>
+
 <div class="setup-banner" id="setupBanner" style="display:none;">
   <div class="setup-box">
     <b>⚠ Belum dikonfigurasi.</b> Data belum tersambung ke cloud, jadi tiap browser/device masih lihat versi sendiri-sendiri.
@@ -408,6 +433,20 @@
   </div>
 </div>
 
+<!-- Modal edit API key (khusus Gemini CLI) -->
+<div class="modal-overlay" id="apiKeyModalOverlay">
+  <div class="modal">
+    <h3>Edit API Key</h3>
+    <p id="apiKeyModalSub">username@gmail.com</p>
+    <label class="modal-label" for="apiKeyInput">Gemini API Key</label>
+    <input type="text" id="apiKeyInput" placeholder="AIza..." autocomplete="off">
+    <div class="modal-actions">
+      <button class="btn btn-manual" id="apiKeyModalCancelBtn" style="flex:1;">Batal</button>
+      <button class="btn btn-primary" id="apiKeyModalSaveBtn" style="flex:1;">Simpan</button>
+    </div>
+  </div>
+</div>
+
 <script>
 /* =========================================================
    CONFIG — isi ini sebelum di-push ke GitHub Pages
@@ -419,6 +458,7 @@ const CONFIG = {
 const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${CONFIG.BIN_ID}`;
 const SYNC_INTERVAL_MS = 20000;
 const RESET_DAYS = 7;
+const GEMINI_RESET_DAYS = 1;
 const LOCAL_CACHE_KEY = "account_grid_cache_v1";
 
 /* =========================================================
@@ -482,7 +522,7 @@ function addNewAccount(username, displayName){
   customAccounts.push({ id, name, color });
   saveCustomAccounts(customAccounts);
   rebuildAccounts();
-  if(!state[id]) state[id] = { target: null };
+  if(!state[id]) state[id] = { target: null, geminiTarget: null, apiKey: "" };
   saveLocalCache();
 }
 
@@ -511,11 +551,17 @@ let modalTargetId = null;
 let deleteMode = false;
 let deleteTargetId = null;
 let cancelTargetId = null;
+let currentTab = "antigravity"; // "antigravity" | "gemini"
+let apiKeyTargetId = null;
 
 function initialState(){
   const s = {};
-  ACCOUNTS.forEach(a => s[a.id] = { target: null });
+  ACCOUNTS.forEach(a => s[a.id] = { target: null, geminiTarget: null, apiKey: "" });
   return s;
+}
+
+function targetField(tab){
+  return tab === "gemini" ? "geminiTarget" : "target";
 }
 
 function initials(name){
@@ -547,12 +593,14 @@ function render(){
   const now = Date.now();
   const grid = document.getElementById("grid");
   const emptyState = document.getElementById("emptyState");
+  const field = targetField(currentTab);
 
   let list = ACCOUNTS.map(a => {
-    const target = state[a.id] ? state[a.id].target : null;
+    const target = state[a.id] ? state[a.id][field] : null;
     const remaining = target ? target - now : 0;
     const isReady = !target || remaining <= 0;
-    return { ...a, target, remaining, isReady };
+    const apiKey = state[a.id] ? (state[a.id].apiKey || "") : "";
+    return { ...a, target, remaining, isReady, apiKey };
   });
 
   // filter
@@ -572,28 +620,87 @@ function render(){
   });
 
   document.getElementById("statReady").textContent = ACCOUNTS.filter(a=>{
-    const t = state[a.id] ? state[a.id].target : null;
+    const t = state[a.id] ? state[a.id][field] : null;
     return !t || (t - now) <= 0;
   }).length;
   document.getElementById("statWaiting").textContent = ACCOUNTS.filter(a=>{
-    const t = state[a.id] ? state[a.id].target : null;
+    const t = state[a.id] ? state[a.id][field] : null;
     return t && (t - now) > 0;
   }).length;
 
   emptyState.style.display = list.length ? "none" : "block";
-  grid.innerHTML = list.map(a => cardHTML(a)).join("");
+  grid.innerHTML = list.map(a => currentTab === "gemini" ? cardHTMLGemini(a) : cardHTML(a)).join("");
 
   // bind buttons
   list.forEach(a => {
-    const limitBtn = document.getElementById(`limit-${cssSafe(a.id)}`);
-    const manualBtn = document.getElementById(`manual-${cssSafe(a.id)}`);
-    const cancelBtn = document.getElementById(`cancel-${cssSafe(a.id)}`);
-    const delBtn = document.getElementById(`del-${cssSafe(a.id)}`);
-    if(limitBtn) limitBtn.onclick = () => setLimit(a.id);
-    if(manualBtn) manualBtn.onclick = () => openManualModal(a.id);
-    if(cancelBtn) cancelBtn.onclick = () => openCancelConfirm(a.id);
+    const safe = cssSafe(a.id);
+    const delBtn = document.getElementById(`del-${safe}`);
     if(delBtn) delBtn.onclick = () => openDeleteConfirm(a.id);
+
+    if(currentTab === "gemini"){
+      const limitBtn = document.getElementById(`glimit-${safe}`);
+      const cancelBtn = document.getElementById(`gcancel-${safe}`);
+      const keyBtn = document.getElementById(`gkey-${safe}`);
+      const copyBtn = document.getElementById(`gcopy-${safe}`);
+      if(limitBtn) limitBtn.onclick = () => setLimit(a.id);
+      if(cancelBtn) cancelBtn.onclick = () => openCancelConfirm(a.id);
+      if(keyBtn) keyBtn.onclick = () => openApiKeyModal(a.id);
+      if(copyBtn) copyBtn.onclick = () => copyApiKey(a.id);
+    } else {
+      const limitBtn = document.getElementById(`limit-${safe}`);
+      const manualBtn = document.getElementById(`manual-${safe}`);
+      const cancelBtn = document.getElementById(`cancel-${safe}`);
+      if(limitBtn) limitBtn.onclick = () => setLimit(a.id);
+      if(manualBtn) manualBtn.onclick = () => openManualModal(a.id);
+      if(cancelBtn) cancelBtn.onclick = () => openCancelConfirm(a.id);
+    }
   });
+}
+
+function cardHTMLGemini(a){
+  const statusClass = a.isReady ? "status-ready" : "status-waiting";
+  const email = a.id + "@gmail.com";
+  const valueText = a.isReady ? "READY" : fmtCountdown(a.remaining);
+  const badgeText = a.isReady ? "SIAP PAKAI" : "COOLDOWN";
+  const targetLine = a.target
+    ? (a.isReady ? `Selesai: ${fmtTargetDate(a.target)}` : `Target ready: ${fmtTargetDate(a.target)}`)
+    : "Belum ada limit tercatat";
+  const safe = cssSafe(a.id);
+  const deleteBtnHTML = deleteMode
+    ? `<button class="delete-account-btn" id="del-${safe}" title="Hapus akun ini">🗑</button>`
+    : "";
+  const keyLine = a.apiKey
+    ? `API Key: <span class="apikey-mask">••••${a.apiKey.slice(-4)}</span>`
+    : `API Key: <span class="apikey-empty">belum diisi</span>`;
+
+  return `
+  <div class="card ${statusClass} ${deleteMode ? "delete-mode" : ""}">
+    ${deleteBtnHTML}
+    <div class="card-top">
+      <div class="avatar" style="background:${a.color}">${initials(a.name)}</div>
+      <div class="id-block">
+        <div class="id-username">${email}</div>
+        <div class="id-name">${a.name}</div>
+      </div>
+    </div>
+    <div class="status-line ${statusClass}">
+      <div>
+        <div class="status-label">status</div>
+        <div class="status-value">${valueText}</div>
+      </div>
+      <div class="status-badge">${badgeText}</div>
+    </div>
+    <div class="target-line">${targetLine}</div>
+    <div class="apikey-line">${keyLine}</div>
+    <div class="actions">
+      <button class="btn btn-limit" id="glimit-${safe}">Limit 1 Hari</button>
+      <button class="btn btn-cancel" id="gcancel-${safe}" ${a.target ? "" : "disabled"}>Batal</button>
+    </div>
+    <div class="actions">
+      <button class="btn btn-key" id="gkey-${safe}">Edit API Key</button>
+      <button class="btn btn-copy" id="gcopy-${safe}" ${a.apiKey ? "" : "disabled"}>Salin</button>
+    </div>
+  </div>`;
 }
 
 function cssSafe(id){ return id.replace(/[^a-zA-Z0-9]/g,"_"); }
@@ -641,14 +748,23 @@ function cardHTML(a){
    ACTIONS
    ========================================================= */
 function setLimit(id){
-  const target = Date.now() + RESET_DAYS * 86400000;
-  state[id] = { target };
+  if(!state[id]) state[id] = { target: null, geminiTarget: null, apiKey: "" };
+  if(currentTab === "gemini"){
+    state[id].geminiTarget = Date.now() + GEMINI_RESET_DAYS * 86400000;
+  } else {
+    state[id].target = Date.now() + RESET_DAYS * 86400000;
+  }
   render();
   persist();
 }
 
 function cancelCountdown(id){
-  state[id] = { target: null };
+  if(!state[id]) state[id] = { target: null, geminiTarget: null, apiKey: "" };
+  if(currentTab === "gemini"){
+    state[id].geminiTarget = null;
+  } else {
+    state[id].target = null;
+  }
   render();
   persist();
 }
@@ -728,7 +844,8 @@ document.getElementById("modalSaveBtn").onclick = () => {
   const val = document.getElementById("manualDateInput").value;
   if(!val) return;
   const ts = new Date(val).getTime();
-  state[modalTargetId] = { target: ts };
+  if(!state[modalTargetId]) state[modalTargetId] = { target: null, geminiTarget: null, apiKey: "" };
+  state[modalTargetId].target = ts;
   closeModal();
   render();
   persist();
@@ -841,6 +958,79 @@ document.getElementById("cancelConfirmYesBtn").onclick = () => {
 };
 
 /* =========================================================
+   MODAL EDIT API KEY (khusus Gemini CLI)
+   ========================================================= */
+function openApiKeyModal(id){
+  apiKeyTargetId = id;
+  const acc = ACCOUNTS.find(a => a.id === id);
+  if(!acc) return;
+  document.getElementById("apiKeyModalSub").textContent = acc.id + "@gmail.com";
+  const input = document.getElementById("apiKeyInput");
+  input.value = (state[id] && state[id].apiKey) ? state[id].apiKey : "";
+  document.getElementById("apiKeyModalOverlay").classList.add("open");
+  input.focus();
+}
+function closeApiKeyModal(){
+  document.getElementById("apiKeyModalOverlay").classList.remove("open");
+  apiKeyTargetId = null;
+}
+document.getElementById("apiKeyModalCancelBtn").onclick = closeApiKeyModal;
+document.getElementById("apiKeyModalOverlay").addEventListener("click", (e) => {
+  if(e.target.id === "apiKeyModalOverlay") closeApiKeyModal();
+});
+document.getElementById("apiKeyModalSaveBtn").onclick = () => {
+  if(!apiKeyTargetId) return;
+  const val = document.getElementById("apiKeyInput").value.trim();
+  if(!state[apiKeyTargetId]) state[apiKeyTargetId] = { target: null, geminiTarget: null, apiKey: "" };
+  state[apiKeyTargetId].apiKey = val;
+  closeApiKeyModal();
+  render();
+  persist();
+};
+
+function copyApiKey(id){
+  const key = state[id] && state[id].apiKey ? state[id].apiKey : "";
+  if(!key) return;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(key).then(() => {
+      flashCopyFeedback(id);
+    }).catch(() => fallbackCopyApiKey(key, id));
+  } else {
+    fallbackCopyApiKey(key, id);
+  }
+}
+function fallbackCopyApiKey(text, id){
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try{ document.execCommand("copy"); }catch(e){}
+  document.body.removeChild(ta);
+  flashCopyFeedback(id);
+}
+function flashCopyFeedback(id){
+  const btn = document.getElementById(`gcopy-${cssSafe(id)}`);
+  if(!btn) return;
+  const original = btn.textContent;
+  btn.textContent = "Tersalin!";
+  setTimeout(() => { if(document.body.contains(btn)) btn.textContent = original; }, 1200);
+}
+
+/* =========================================================
+   TAB SWITCHER (Antigravity / Gemini CLI)
+   ========================================================= */
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentTab = btn.dataset.tab;
+    render();
+  });
+});
+
+/* =========================================================
    FILTER / SEARCH UI
    ========================================================= */
 document.querySelectorAll(".filter-btn").forEach(btn => {
@@ -938,7 +1128,11 @@ async function syncFromCloud(){
     // merge: pastikan semua akun di ACCOUNTS punya entry
     const merged = initialState();
     ACCOUNTS.forEach(a => {
-      if(cloudState[a.id]) merged[a.id] = cloudState[a.id];
+      if(cloudState[a.id]){
+        merged[a.id] = cloudState[a.id];
+        if(merged[a.id].geminiTarget === undefined) merged[a.id].geminiTarget = null;
+        if(merged[a.id].apiKey === undefined) merged[a.id].apiKey = "";
+      }
     });
     state = merged;
     saveLocalCache();
@@ -954,7 +1148,11 @@ async function init(){
 
   const cached = loadLocalCache();
   state = cached || initialState();
-  ACCOUNTS.forEach(a => { if(!state[a.id]) state[a.id] = { target: null }; });
+  ACCOUNTS.forEach(a => {
+    if(!state[a.id]) state[a.id] = { target: null, geminiTarget: null, apiKey: "" };
+    if(state[a.id].geminiTarget === undefined) state[a.id].geminiTarget = null;
+    if(state[a.id].apiKey === undefined) state[a.id].apiKey = "";
+  });
 
   render();
   tickClock();
