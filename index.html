@@ -466,4 +466,767 @@ const CONFIG = {
 };
 const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${CONFIG.BIN_ID}`;
 const SYNC_INTERVAL_MS = 20000;
-const RESET_D
+const RESET_DAYS = 7;
+const GEMINI_RESET_DAYS = 1;
+const LOCAL_CACHE_KEY = "account_grid_cache_v1";
+
+/* =========================================================
+   DAFTAR AKUN (edit bebas: tambah / hapus / ganti nama & warna)
+   ========================================================= */
+const BASE_ACCOUNTS = [
+  { id:"ad4392879",           name:"ahmad dani",              color:"#e0672c" },
+  { id:"fatturama59",         name:"Pemula Live Gaming",       color:"#c0392b" },
+  { id:"mqosas123",           name:"M Qosas W",                color:"#8e44ad" },
+  { id:"mqosas123456",        name:"M Qosas",                  color:"#6c6fd1" },
+  { id:"mqosasw21",           name:"Muhamad Qosas Wardani",    color:"#5b7a9d" },
+  { id:"muhqosasw123",        name:"Muhamad Qosas Wardani",    color:"#8a7b2e" },
+  { id:"muhqosaswardani",     name:"Muhamad Qosas Wardani",    color:"#8b6753" },
+  { id:"munaaa0908",          name:"Mu naaa",                  color:"#5c3a2e" },
+  { id:"ndwi15043",           name:"A",                        color:"#2e86c1" },
+  { id:"qosas4407",           name:"qosas 16",                 color:"#e67e22" },
+  { id:"qosaswar",            name:"Qosas War",                color:"#6e4b3a" },
+  { id:"qosaswardani5",       name:"Qosas Wardani",            color:"#1a6b5b" },
+  { id:"qosasworkspace",      name:"Qosas Workspace",          color:"#d64545" },
+  { id:"student.mercubuana",  name:"MUHAMAD QOSAS WARDANI",    color:"#17a398" },
+];
+
+const CUSTOM_ACCOUNTS_KEY = "account_grid_custom_accounts_v1";
+const DELETED_BASE_ACCOUNTS_KEY = "account_grid_deleted_base_v1";
+const ACCOUNT_TABS_KEY = "account_grid_account_tabs_v1";
+const AVATAR_COLORS = ["#e0672c","#c0392b","#8e44ad","#6c6fd1","#5b7a9d","#8a7b2e","#8b6753","#5c3a2e","#2e86c1","#e67e22","#6e4b3a","#1a6b5b","#d64545","#17a398","#2ecc71","#d35400","#7f8c8d","#c2185b"];
+
+function loadCustomAccounts(){
+  try{
+    const raw = localStorage.getItem(CUSTOM_ACCOUNTS_KEY);
+    if(raw) return JSON.parse(raw);
+  }catch(e){}
+  return [];
+}
+function saveCustomAccounts(list){
+  try{ localStorage.setItem(CUSTOM_ACCOUNTS_KEY, JSON.stringify(list)); }catch(e){}
+}
+
+function loadDeletedBaseIds(){
+  try{
+    const raw = localStorage.getItem(DELETED_BASE_ACCOUNTS_KEY);
+    if(raw) return JSON.parse(raw);
+  }catch(e){}
+  return [];
+}
+function saveDeletedBaseIds(list){
+  try{ localStorage.setItem(DELETED_BASE_ACCOUNTS_KEY, JSON.stringify(list)); }catch(e){}
+}
+
+// accountTabs[id] = { antigravity: bool, gemini: bool } -> menentukan akun ini
+// tampil di tab mana. Akun yang belum punya entry dianggap tampil di kedua tab
+// (supaya akun lama / bawaan tetap kompatibel seperti sebelumnya).
+function loadAccountTabs(){
+  try{
+    const raw = localStorage.getItem(ACCOUNT_TABS_KEY);
+    if(raw) return JSON.parse(raw);
+  }catch(e){}
+  return {};
+}
+function saveAccountTabs(obj){
+  try{ localStorage.setItem(ACCOUNT_TABS_KEY, JSON.stringify(obj)); }catch(e){}
+}
+function getAccountTabs(id){
+  const t = accountTabs[id];
+  if(!t) return { antigravity:true, gemini:true };
+  return { antigravity: t.antigravity !== false, gemini: t.gemini !== false };
+}
+
+let customAccounts = loadCustomAccounts();
+let deletedBaseIds = loadDeletedBaseIds();
+let accountTabs = loadAccountTabs();
+let ACCOUNTS = BASE_ACCOUNTS.filter(a => !deletedBaseIds.includes(a.id)).concat(customAccounts);
+
+function rebuildAccounts(){
+  ACCOUNTS = BASE_ACCOUNTS.filter(a => !deletedBaseIds.includes(a.id)).concat(customAccounts);
+}
+
+function addNewAccount(username, displayName, tabsSelected){
+  const id = username.trim().toLowerCase();
+  const name = displayName.trim();
+  const color = AVATAR_COLORS[(BASE_ACCOUNTS.length + customAccounts.length) % AVATAR_COLORS.length];
+  customAccounts.push({ id, name, color });
+  saveCustomAccounts(customAccounts);
+  accountTabs[id] = {
+    antigravity: !!(tabsSelected && tabsSelected.antigravity),
+    gemini: !!(tabsSelected && tabsSelected.gemini)
+  };
+  saveAccountTabs(accountTabs);
+  rebuildAccounts();
+  if(!state[id]) state[id] = { target: null, geminiTarget: null, apiKey: "" };
+  saveLocalCache();
+}
+
+// Hapus akun HANYA dari tab yang sedang aktif. Kalau akun jadi tidak
+// tampil di tab manapun (sudah dihapus dari keduanya), baru akun +
+// data cooldown-nya dihapus permanen.
+function deleteAccountFromTab(id, tab){
+  const current = getAccountTabs(id);
+  const updated = { ...current, [tab]: false };
+  accountTabs[id] = updated;
+
+  if(!updated.antigravity && !updated.gemini){
+    const customIdx = customAccounts.findIndex(a => a.id === id);
+    if(customIdx !== -1){
+      customAccounts.splice(customIdx, 1);
+      saveCustomAccounts(customAccounts);
+    } else if(!deletedBaseIds.includes(id)){
+      deletedBaseIds.push(id);
+      saveDeletedBaseIds(deletedBaseIds);
+    }
+    delete state[id];
+    delete accountTabs[id];
+    rebuildAccounts();
+  }
+  saveAccountTabs(accountTabs);
+  saveLocalCache();
+}
+
+/* =========================================================
+   STATE
+   ========================================================= */
+// state[id] = { target: <timestamp ms> | null }
+let state = {};
+let currentFilter = "all";
+let currentSearch = "";
+let modalTargetId = null;
+let deleteMode = false;
+let deleteTargetId = null;
+let cancelTargetId = null;
+let currentTab = "antigravity"; // "antigravity" | "gemini"
+let apiKeyTargetId = null;
+
+function initialState(){
+  const s = {};
+  ACCOUNTS.forEach(a => s[a.id] = { target: null, geminiTarget: null, apiKey: "" });
+  return s;
+}
+
+function targetField(tab){
+  return tab === "gemini" ? "geminiTarget" : "target";
+}
+
+function initials(name){
+  const parts = name.trim().split(/\s+/);
+  if(parts.length === 1) return parts[0].slice(0,2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+function fmtCountdown(ms){
+  if(ms <= 0) return "00:00:00";
+  const totalSec = Math.floor(ms/1000);
+  const d = Math.floor(totalSec / 86400);
+  const h = Math.floor((totalSec % 86400) / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad = n => String(n).padStart(2,"0");
+  return d > 0 ? `${d}h ${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+function fmtTargetDate(ts){
+  const d = new Date(ts);
+  return d.toLocaleString('id-ID', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+}
+
+/* =========================================================
+   RENDER
+   ========================================================= */
+function render(){
+  const now = Date.now();
+  const grid = document.getElementById("grid");
+  const emptyState = document.getElementById("emptyState");
+  const field = targetField(currentTab);
+
+  const visibleAccounts = ACCOUNTS.filter(a => getAccountTabs(a.id)[currentTab]);
+
+  let list = visibleAccounts.map(a => {
+    const target = state[a.id] ? state[a.id][field] : null;
+    const remaining = target ? target - now : 0;
+    const isReady = !target || remaining <= 0;
+    const apiKey = state[a.id] ? (state[a.id].apiKey || "") : "";
+    return { ...a, target, remaining, isReady, apiKey };
+  });
+
+  // filter
+  if(currentSearch){
+    const q = currentSearch.toLowerCase();
+    list = list.filter(a => a.id.toLowerCase().includes(q) || a.name.toLowerCase().includes(q));
+  }
+  if(currentFilter === "ready") list = list.filter(a => a.isReady);
+  if(currentFilter === "waiting") list = list.filter(a => !a.isReady);
+
+  // sort: ready dulu (alfabetis), lalu waiting ascending by remaining time
+  list.sort((a,b) => {
+    if(a.isReady && !b.isReady) return -1;
+    if(!a.isReady && b.isReady) return 1;
+    if(a.isReady && b.isReady) return a.id.localeCompare(b.id);
+    return a.remaining - b.remaining;
+  });
+
+  document.getElementById("statReady").textContent = visibleAccounts.filter(a=>{
+    const t = state[a.id] ? state[a.id][field] : null;
+    return !t || (t - now) <= 0;
+  }).length;
+  document.getElementById("statWaiting").textContent = visibleAccounts.filter(a=>{
+    const t = state[a.id] ? state[a.id][field] : null;
+    return t && (t - now) > 0;
+  }).length;
+
+  emptyState.style.display = list.length ? "none" : "block";
+  grid.innerHTML = list.map(a => currentTab === "gemini" ? cardHTMLGemini(a) : cardHTML(a)).join("");
+
+  // bind buttons
+  list.forEach(a => {
+    const safe = cssSafe(a.id);
+    const delBtn = document.getElementById(`del-${safe}`);
+    if(delBtn) delBtn.onclick = () => openDeleteConfirm(a.id);
+
+    if(currentTab === "gemini"){
+      const limitBtn = document.getElementById(`glimit-${safe}`);
+      const cancelBtn = document.getElementById(`gcancel-${safe}`);
+      const keyBtn = document.getElementById(`gkey-${safe}`);
+      const copyBtn = document.getElementById(`gcopy-${safe}`);
+      if(limitBtn) limitBtn.onclick = () => setLimit(a.id);
+      if(cancelBtn) cancelBtn.onclick = () => openCancelConfirm(a.id);
+      if(keyBtn) keyBtn.onclick = () => openApiKeyModal(a.id);
+      if(copyBtn) copyBtn.onclick = () => copyApiKey(a.id);
+    } else {
+      const manualBtn = document.getElementById(`manual-${safe}`);
+      const cancelBtn = document.getElementById(`cancel-${safe}`);
+      if(manualBtn) manualBtn.onclick = () => openManualModal(a.id);
+      if(cancelBtn) cancelBtn.onclick = () => openCancelConfirm(a.id);
+    }
+  });
+}
+
+function cardHTMLGemini(a){
+  const statusClass = a.isReady ? "status-ready" : "status-waiting";
+  const email = a.id + "@gmail.com";
+  const valueText = a.isReady ? "READY" : fmtCountdown(a.remaining);
+  const badgeText = a.isReady ? "SIAP PAKAI" : "COOLDOWN";
+  const targetLine = a.target
+    ? (a.isReady ? `Selesai: ${fmtTargetDate(a.target)}` : `Target ready: ${fmtTargetDate(a.target)}`)
+    : "Belum ada limit tercatat";
+  const safe = cssSafe(a.id);
+  const deleteBtnHTML = deleteMode
+    ? `<button class="delete-account-btn" id="del-${safe}" title="Hapus akun ini">🗑</button>`
+    : "";
+  const keyLine = a.apiKey
+    ? `API Key: <span class="apikey-mask">••••${a.apiKey.slice(-4)}</span>`
+    : `API Key: <span class="apikey-empty">belum diisi</span>`;
+
+  return `
+  <div class="card ${statusClass} ${deleteMode ? "delete-mode" : ""}">
+    ${deleteBtnHTML}
+    <div class="card-top">
+      <div class="avatar" style="background:${a.color}">${initials(a.name)}</div>
+      <div class="id-block">
+        <div class="id-username">${email}</div>
+        <div class="id-name">${a.name}</div>
+      </div>
+    </div>
+    <div class="status-line ${statusClass}">
+      <div>
+        <div class="status-label">status</div>
+        <div class="status-value">${valueText}</div>
+      </div>
+      <div class="status-badge">${badgeText}</div>
+    </div>
+    <div class="target-line">${targetLine}</div>
+    <div class="apikey-line">${keyLine}</div>
+    <div class="actions">
+      <button class="btn btn-limit" id="glimit-${safe}">Limit 1 Hari</button>
+      <button class="btn btn-cancel" id="gcancel-${safe}" ${a.isReady ? "disabled" : ""}>Batal</button>
+    </div>
+    <div class="actions">
+      <button class="btn btn-key" id="gkey-${safe}">Edit API Key</button>
+      <button class="btn btn-copy" id="gcopy-${safe}" ${a.apiKey ? "" : "disabled"}>Salin</button>
+    </div>
+  </div>`;
+}
+
+function cssSafe(id){ return id.replace(/[^a-zA-Z0-9]/g,"_"); }
+
+function cardHTML(a){
+  const statusClass = a.isReady ? "status-ready" : "status-waiting";
+  const email = a.id + "@gmail.com";
+  const valueText = a.isReady ? "READY" : fmtCountdown(a.remaining);
+  const badgeText = a.isReady ? "SIAP PAKAI" : "COOLDOWN";
+  const targetLine = a.target
+    ? (a.isReady ? `Selesai: ${fmtTargetDate(a.target)}` : `Target ready: ${fmtTargetDate(a.target)}`)
+    : "Belum ada limit tercatat";
+  const safe = cssSafe(a.id);
+  const deleteBtnHTML = deleteMode
+    ? `<button class="delete-account-btn" id="del-${safe}" title="Hapus akun ini">🗑</button>`
+    : "";
+
+  return `
+  <div class="card ${statusClass} ${deleteMode ? "delete-mode" : ""}">
+    ${deleteBtnHTML}
+    <div class="card-top">
+      <div class="avatar" style="background:${a.color}">${initials(a.name)}</div>
+      <div class="id-block">
+        <div class="id-username">${email}</div>
+        <div class="id-name">${a.name}</div>
+      </div>
+    </div>
+    <div class="status-line ${statusClass}">
+      <div>
+        <div class="status-label">status</div>
+        <div class="status-value">${valueText}</div>
+      </div>
+      <div class="status-badge">${badgeText}</div>
+    </div>
+    <div class="target-line">${targetLine}</div>
+    <div class="actions">
+      <button class="btn btn-manual" id="manual-${safe}">Limit</button>
+      <button class="btn btn-cancel" id="cancel-${safe}" ${a.isReady ? "disabled" : ""}>Batal</button>
+    </div>
+  </div>`;
+}
+
+/* =========================================================
+   ACTIONS
+   ========================================================= */
+function setLimit(id){
+  if(!state[id]) state[id] = { target: null, geminiTarget: null, apiKey: "" };
+  if(currentTab === "gemini"){
+    state[id].geminiTarget = Date.now() + GEMINI_RESET_DAYS * 86400000;
+  } else {
+    state[id].target = Date.now() + RESET_DAYS * 86400000;
+  }
+  render();
+  persist();
+}
+
+function cancelCountdown(id){
+  if(!state[id]) state[id] = { target: null, geminiTarget: null, apiKey: "" };
+  if(currentTab === "gemini"){
+    state[id].geminiTarget = null;
+  } else {
+    state[id].target = null;
+  }
+  render();
+  persist();
+}
+
+function openManualModal(id){
+  modalTargetId = id;
+  const acc = ACCOUNTS.find(a => a.id === id);
+  document.getElementById("modalSub").textContent = acc.id + "@gmail.com";
+  const input = document.getElementById("manualDateInput");
+  const defaultDate = new Date(Date.now() + RESET_DAYS*86400000);
+  input.value = toLocalInputValue(defaultDate);
+  const durInput = document.getElementById("manualDurationInput");
+  durInput.value = "";
+  setDurationHint("", "");
+  document.getElementById("modalOverlay").classList.add("open");
+  durInput.focus();
+}
+
+function toLocalInputValue(date){
+  const pad = n => String(n).padStart(2,"0");
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function closeModal(){
+  document.getElementById("modalOverlay").classList.remove("open");
+  modalTargetId = null;
+}
+
+/* =========================================================
+   PARSE FORMAT DURASI (mis. "167h50m42s", "2d5h30m", "45m")
+   ========================================================= */
+function parseDurationToMs(str){
+  if(!str) return null;
+  const clean = str.trim().toLowerCase().replace(/\s+/g,"");
+  if(!clean) return null;
+  const re = /^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/;
+  const match = clean.match(re);
+  if(!match) return null;
+  const [, d, h, m, s] = match;
+  if(!d && !h && !m && !s) return null; // tidak ada satuan yang cocok sama sekali
+  const days = parseInt(d || 0, 10);
+  const hours = parseInt(h || 0, 10);
+  const mins = parseInt(m || 0, 10);
+  const secs = parseInt(s || 0, 10);
+  return (((days*24 + hours)*60 + mins)*60 + secs) * 1000;
+}
+
+function setDurationHint(text, mode){
+  const el = document.getElementById("durationHint");
+  el.textContent = text || "\u00A0";
+  el.classList.remove("ok","err");
+  if(mode) el.classList.add(mode);
+}
+
+document.getElementById("manualDurationInput").addEventListener("input", (e) => {
+  const raw = e.target.value;
+  const ms = parseDurationToMs(raw);
+  if(raw.trim() === ""){
+    setDurationHint("", "");
+    return;
+  }
+  if(ms === null){
+    setDurationHint("Format tidak dikenali. Pakai contoh: 167h50m42s", "err");
+    return;
+  }
+  const target = new Date(Date.now() + ms);
+  document.getElementById("manualDateInput").value = toLocalInputValue(target);
+  setDurationHint(`Ready pada: ${fmtTargetDate(target.getTime())}`, "ok");
+});
+
+document.getElementById("modalCancelBtn").onclick = closeModal;
+document.getElementById("modalOverlay").addEventListener("click", (e) => {
+  if(e.target.id === "modalOverlay") closeModal();
+});
+document.getElementById("modalSaveBtn").onclick = () => {
+  if(!modalTargetId) return;
+  const val = document.getElementById("manualDateInput").value;
+  if(!val) return;
+  const ts = new Date(val).getTime();
+  if(!state[modalTargetId]) state[modalTargetId] = { target: null, geminiTarget: null, apiKey: "" };
+  state[modalTargetId].target = ts;
+  closeModal();
+  render();
+  persist();
+};
+
+/* =========================================================
+   MODAL TAMBAH AKUN
+   ========================================================= */
+function openAddAccountModal(){
+  document.getElementById("newAccUsername").value = "";
+  document.getElementById("newAccName").value = "";
+  // default: tab yang lagi aktif otomatis dicentang, tab lain kosong
+  document.getElementById("newAccTabAntigravity").checked = (currentTab === "antigravity");
+  document.getElementById("newAccTabGemini").checked = (currentTab === "gemini");
+  setAddModalError("");
+  document.getElementById("addModalOverlay").classList.add("open");
+  document.getElementById("newAccUsername").focus();
+}
+function closeAddAccountModal(){
+  document.getElementById("addModalOverlay").classList.remove("open");
+}
+function setAddModalError(text){
+  document.getElementById("addModalError").textContent = text || "\u00A0";
+}
+
+document.getElementById("addAccountBtn").onclick = openAddAccountModal;
+document.getElementById("addModalCancelBtn").onclick = closeAddAccountModal;
+document.getElementById("addModalOverlay").addEventListener("click", (e) => {
+  if(e.target.id === "addModalOverlay") closeAddAccountModal();
+});
+document.getElementById("addModalSaveBtn").onclick = () => {
+  const usernameRaw = document.getElementById("newAccUsername").value;
+  const nameRaw = document.getElementById("newAccName").value;
+  const username = usernameRaw.trim();
+  const name = nameRaw.trim();
+  if(!username){
+    setAddModalError("Username wajib diisi.");
+    return;
+  }
+  if(!/^[a-zA-Z0-9._]+$/.test(username)){
+    setAddModalError("Username hanya boleh huruf, angka, titik, underscore.");
+    return;
+  }
+  const id = username.toLowerCase();
+  if(ACCOUNTS.some(a => a.id === id)){
+    setAddModalError("Username ini sudah ada di daftar.");
+    return;
+  }
+  if(!name){
+    setAddModalError("Nama tampilan wajib diisi.");
+    return;
+  }
+  const wantAntigravity = document.getElementById("newAccTabAntigravity").checked;
+  const wantGemini = document.getElementById("newAccTabGemini").checked;
+  if(!wantAntigravity && !wantGemini){
+    setAddModalError("Pilih minimal satu tab (Antigravity atau Gemini CLI).");
+    return;
+  }
+  addNewAccount(username, name, { antigravity: wantAntigravity, gemini: wantGemini });
+  closeAddAccountModal();
+  render();
+  persist();
+};
+
+/* =========================================================
+   MODE HAPUS AKUN
+   ========================================================= */
+document.getElementById("deleteModeBtn").onclick = () => {
+  deleteMode = !deleteMode;
+  document.getElementById("deleteModeBtn").classList.toggle("active", deleteMode);
+  render();
+};
+
+function openDeleteConfirm(id){
+  deleteTargetId = id;
+  const acc = ACCOUNTS.find(a => a.id === id);
+  if(!acc) return;
+  document.getElementById("deleteConfirmSub").textContent = acc.id + "@gmail.com";
+  const tabs = getAccountTabs(id);
+  const otherTab = currentTab === "gemini" ? "antigravity" : "gemini";
+  const otherTabLabel = otherTab === "gemini" ? "Gemini CLI" : "Antigravity";
+  const willStillExist = tabs[otherTab];
+  document.getElementById("deleteConfirmBox").textContent = willStillExist
+    ? `Akun ini hanya akan dihapus dari tab ${currentTab === "gemini" ? "Gemini CLI" : "Antigravity"}. Akun tetap muncul di tab ${otherTabLabel}.`
+    : "Akun ini tidak terdaftar di tab lain, jadi akun beserta data cooldown-nya akan dihapus permanen.";
+  document.getElementById("deleteConfirmOverlay").classList.add("open");
+}
+function closeDeleteConfirm(){
+  document.getElementById("deleteConfirmOverlay").classList.remove("open");
+  deleteTargetId = null;
+}
+document.getElementById("deleteConfirmCancelBtn").onclick = closeDeleteConfirm;
+document.getElementById("deleteConfirmOverlay").addEventListener("click", (e) => {
+  if(e.target.id === "deleteConfirmOverlay") closeDeleteConfirm();
+});
+document.getElementById("deleteConfirmYesBtn").onclick = () => {
+  if(!deleteTargetId) return;
+  deleteAccountFromTab(deleteTargetId, currentTab);
+  closeDeleteConfirm();
+  render();
+  persist();
+};
+
+/* =========================================================
+   KONFIRMASI BATAL COOLDOWN
+   ========================================================= */
+function openCancelConfirm(id){
+  cancelTargetId = id;
+  const acc = ACCOUNTS.find(a => a.id === id);
+  if(!acc) return;
+  document.getElementById("cancelConfirmSub").textContent = acc.id + "@gmail.com";
+  document.getElementById("cancelConfirmOverlay").classList.add("open");
+}
+function closeCancelConfirm(){
+  document.getElementById("cancelConfirmOverlay").classList.remove("open");
+  cancelTargetId = null;
+}
+document.getElementById("cancelConfirmCancelBtn").onclick = closeCancelConfirm;
+document.getElementById("cancelConfirmOverlay").addEventListener("click", (e) => {
+  if(e.target.id === "cancelConfirmOverlay") closeCancelConfirm();
+});
+document.getElementById("cancelConfirmYesBtn").onclick = () => {
+  if(!cancelTargetId) return;
+  cancelCountdown(cancelTargetId);
+  closeCancelConfirm();
+};
+
+/* =========================================================
+   MODAL EDIT API KEY (khusus Gemini CLI)
+   ========================================================= */
+function openApiKeyModal(id){
+  apiKeyTargetId = id;
+  const acc = ACCOUNTS.find(a => a.id === id);
+  if(!acc) return;
+  document.getElementById("apiKeyModalSub").textContent = acc.id + "@gmail.com";
+  const input = document.getElementById("apiKeyInput");
+  input.value = (state[id] && state[id].apiKey) ? state[id].apiKey : "";
+  document.getElementById("apiKeyModalOverlay").classList.add("open");
+  input.focus();
+}
+function closeApiKeyModal(){
+  document.getElementById("apiKeyModalOverlay").classList.remove("open");
+  apiKeyTargetId = null;
+}
+document.getElementById("apiKeyModalCancelBtn").onclick = closeApiKeyModal;
+document.getElementById("apiKeyModalOverlay").addEventListener("click", (e) => {
+  if(e.target.id === "apiKeyModalOverlay") closeApiKeyModal();
+});
+document.getElementById("apiKeyModalSaveBtn").onclick = () => {
+  if(!apiKeyTargetId) return;
+  const val = document.getElementById("apiKeyInput").value.trim();
+  if(!state[apiKeyTargetId]) state[apiKeyTargetId] = { target: null, geminiTarget: null, apiKey: "" };
+  state[apiKeyTargetId].apiKey = val;
+  closeApiKeyModal();
+  render();
+  persist();
+};
+
+function copyApiKey(id){
+  const key = state[id] && state[id].apiKey ? state[id].apiKey : "";
+  if(!key) return;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(key).then(() => {
+      flashCopyFeedback(id);
+    }).catch(() => fallbackCopyApiKey(key, id));
+  } else {
+    fallbackCopyApiKey(key, id);
+  }
+}
+function fallbackCopyApiKey(text, id){
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try{ document.execCommand("copy"); }catch(e){}
+  document.body.removeChild(ta);
+  flashCopyFeedback(id);
+}
+function flashCopyFeedback(id){
+  const btn = document.getElementById(`gcopy-${cssSafe(id)}`);
+  if(!btn) return;
+  const original = btn.textContent;
+  btn.textContent = "Tersalin!";
+  setTimeout(() => { if(document.body.contains(btn)) btn.textContent = original; }, 1200);
+}
+
+/* =========================================================
+   TAB SWITCHER (Antigravity / Gemini CLI)
+   ========================================================= */
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentTab = btn.dataset.tab;
+    render();
+  });
+});
+
+/* =========================================================
+   FILTER / SEARCH UI
+   ========================================================= */
+document.querySelectorAll(".filter-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentFilter = btn.dataset.filter;
+    render();
+  });
+});
+document.getElementById("searchInput").addEventListener("input", (e) => {
+  currentSearch = e.target.value;
+  render();
+});
+
+/* =========================================================
+   CLOCK
+   ========================================================= */
+function tickClock(){
+  document.getElementById("clock").textContent = new Date().toLocaleTimeString('id-ID');
+}
+
+/* =========================================================
+   CLOUD SYNC (JSONBin)
+   ========================================================= */
+const isConfigured = () => CONFIG.BIN_ID && CONFIG.BIN_ID !== "PASTE_BIN_ID_DISINI"
+  && CONFIG.API_KEY && CONFIG.API_KEY !== "PASTE_X_MASTER_KEY_DISINI";
+
+function setSyncStatus(mode, text){
+  const el = document.getElementById("syncIndicator");
+  el.classList.remove("ok","err","busy");
+  if(mode) el.classList.add(mode);
+  document.getElementById("syncText").textContent = text;
+}
+
+function saveLocalCache(){
+  try{ localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(state)); }catch(e){}
+}
+function loadLocalCache(){
+  try{
+    const raw = localStorage.getItem(LOCAL_CACHE_KEY);
+    if(raw) return JSON.parse(raw);
+  }catch(e){}
+  return null;
+}
+
+async function fetchCloud(){
+  if(!isConfigured()) return null;
+  setSyncStatus("busy","syncing...");
+  try{
+    const res = await fetch(`${JSONBIN_URL}/latest`, {
+      headers: { "X-Master-Key": CONFIG.API_KEY }
+    });
+    if(!res.ok) throw new Error("fetch failed " + res.status);
+    const data = await res.json();
+    setSyncStatus("ok","synced");
+    return data.record || {};
+  }catch(err){
+    console.error(err);
+    setSyncStatus("err","offline");
+    return null;
+  }
+}
+
+let saveTimer = null;
+function persist(){
+  saveLocalCache();
+  if(!isConfigured()) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(pushCloud, 300);
+}
+
+async function pushCloud(){
+  setSyncStatus("busy","saving...");
+  try{
+    const res = await fetch(JSONBIN_URL, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Master-Key": CONFIG.API_KEY
+      },
+      body: JSON.stringify(state)
+    });
+    if(!res.ok) throw new Error("push failed " + res.status);
+    setSyncStatus("ok","synced");
+  }catch(err){
+    console.error(err);
+    setSyncStatus("err","gagal simpan");
+  }
+}
+
+async function syncFromCloud(){
+  const cloudState = await fetchCloud();
+  if(cloudState){
+    // merge: pastikan semua akun di ACCOUNTS punya entry
+    const merged = initialState();
+    ACCOUNTS.forEach(a => {
+      if(cloudState[a.id]){
+        merged[a.id] = cloudState[a.id];
+        if(merged[a.id].geminiTarget === undefined) merged[a.id].geminiTarget = null;
+        if(merged[a.id].apiKey === undefined) merged[a.id].apiKey = "";
+      }
+    });
+    state = merged;
+    saveLocalCache();
+    render();
+  }
+}
+
+/* =========================================================
+   INIT
+   ========================================================= */
+async function init(){
+  document.getElementById("setupBanner").style.display = isConfigured() ? "none" : "block";
+
+  const cached = loadLocalCache();
+  state = cached || initialState();
+  ACCOUNTS.forEach(a => {
+    if(!state[a.id]) state[a.id] = { target: null, geminiTarget: null, apiKey: "" };
+    if(state[a.id].geminiTarget === undefined) state[a.id].geminiTarget = null;
+    if(state[a.id].apiKey === undefined) state[a.id].apiKey = "";
+  });
+
+  render();
+  tickClock();
+  setInterval(tickClock, 1000);
+  setInterval(render, 1000);
+
+  if(isConfigured()){
+    await syncFromCloud();
+    setInterval(syncFromCloud, SYNC_INTERVAL_MS);
+  }
+}
+
+init();
+</script>
+</body>
+</html>
