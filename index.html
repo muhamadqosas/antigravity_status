@@ -525,6 +525,7 @@ const BASE_ACCOUNTS = [
 const CUSTOM_ACCOUNTS_KEY = "account_grid_custom_accounts_v1";
 const DELETED_BASE_ACCOUNTS_KEY = "account_grid_deleted_base_v1";
 const ACCOUNT_TABS_KEY = "account_grid_account_tabs_v1";
+const IN_USE_KEY = "account_grid_in_use_v1";
 const AVATAR_COLORS = ["#e0672c","#c0392b","#8e44ad","#6c6fd1","#5b7a9d","#8a7b2e","#8b6753","#5c3a2e","#2e86c1","#e67e22","#6e4b3a","#1a6b5b","#d64545","#17a398","#2ecc71","#d35400","#7f8c8d","#c2185b"];
 
 function loadCustomAccounts(){
@@ -645,7 +646,17 @@ let cancelTargetId = null;
 let currentTab = "antigravity"; // "antigravity" | "antigravity-ide" | "gemini"
 let apiKeyTargetId = null;
 let cancelTargetKind = null; // "gemini" | "ide-gemini" | "ide-claude" | undefined (antigravity)
-const inUseAccounts = new Set(); // ID akun Gemini CLI yang sedang "digunakan" (setelah Salin)
+function loadInUse(){
+  try{
+    const raw = localStorage.getItem(IN_USE_KEY);
+    if(raw) return new Set(JSON.parse(raw));
+  }catch(e){}
+  return new Set();
+}
+function saveInUse(){
+  try{ localStorage.setItem(IN_USE_KEY, JSON.stringify([...inUseAccounts])); }catch(e){}
+}
+const inUseAccounts = loadInUse(); // ID akun Gemini CLI yang sedang "digunakan" (persistent)
 
 function defaultStateEntry(){
   return { target: null, geminiTarget: null, apiKey: "", ideGeminiTarget: null, ideClaudeTarget: null };
@@ -1232,6 +1243,7 @@ function copyApiKey(id){
   // Klik lagi saat sudah "Digunakan" → toggle off (tidak perlu salin ulang)
   if(inUseAccounts.has(id)){
     inUseAccounts.delete(id);
+    saveInUse();
     render();
     return;
   }
@@ -1246,6 +1258,7 @@ function copyApiKey(id){
 }
 function markInUse(id){
   inUseAccounts.add(id);
+  saveInUse();
   render();
 }
 function fallbackCopyApiKey(text, id){
