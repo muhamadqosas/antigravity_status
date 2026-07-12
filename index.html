@@ -161,6 +161,26 @@
   }
   .card.status-ready::before{ background:var(--green); box-shadow:0 0 10px var(--green); }
   .card.status-waiting::before{ background:var(--amber); }
+  .card.in-use::before{ background:var(--violet); box-shadow:0 0 10px var(--violet); }
+  .card.in-use{ border-color:#3a3d6a; background:linear-gradient(160deg, #181c2e 0%, var(--surface) 60%); }
+
+  .in-use-badge{
+    display:inline-flex; align-items:center; gap:5px;
+    font-family:'Space Mono',monospace; font-size:9.5px; font-weight:700;
+    letter-spacing:0.5px; padding:3px 8px; border-radius:20px;
+    background:#211c43; color:var(--violet); border:1px solid #3a3d6a;
+  }
+  .in-use-badge .pulse{
+    width:6px; height:6px; border-radius:50%; background:var(--violet);
+    animation:pulse-dot 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse-dot{
+    0%,100%{ opacity:1; transform:scale(1); }
+    50%{ opacity:0.4; transform:scale(0.75); }
+  }
+
+  .btn-copy-active{ background:#211c43; border-color:var(--violet); color:var(--violet); }
+  .btn-copy-active:hover{ background:#2d2659; }
 
   .card-top{ display:flex; align-items:center; gap:11px; }
   .avatar{
@@ -625,6 +645,7 @@ let cancelTargetId = null;
 let currentTab = "antigravity"; // "antigravity" | "antigravity-ide" | "gemini"
 let apiKeyTargetId = null;
 let cancelTargetKind = null; // "gemini" | "ide-gemini" | "ide-claude" | undefined (antigravity)
+const inUseAccounts = new Set(); // ID akun Gemini CLI yang sedang "digunakan" (setelah Salin)
 
 function defaultStateEntry(){
   return { target: null, geminiTarget: null, apiKey: "", ideGeminiTarget: null, ideClaudeTarget: null };
@@ -768,6 +789,7 @@ function render(){
 
 function cardHTMLGemini(a){
   const statusClass = a.isReady ? "status-ready" : "status-waiting";
+  const isInUse = inUseAccounts.has(a.id);
   const email = a.id + "@gmail.com";
   const valueText = a.isReady ? "READY" : fmtCountdown(a.remaining);
   const badgeText = a.isReady ? "SIAP PAKAI" : "COOLDOWN";
@@ -781,15 +803,20 @@ function cardHTMLGemini(a){
   const keyLine = a.apiKey
     ? `API Key: <span class="apikey-mask">••••${a.apiKey.slice(-4)}</span>`
     : `API Key: <span class="apikey-empty">belum diisi</span>`;
+  const inUseBadgeHTML = isInUse
+    ? `<span class="in-use-badge"><span class="pulse"></span>DIGUNAKAN</span>`
+    : "";
+  const copyBtnClass = isInUse ? "btn btn-copy btn-copy-active" : "btn btn-copy";
+  const copyBtnLabel = isInUse ? "✓ Digunakan" : "Salin";
 
   return `
-  <div class="card ${statusClass} ${deleteMode ? "delete-mode" : ""}">
+  <div class="card ${statusClass} ${isInUse ? "in-use" : ""} ${deleteMode ? "delete-mode" : ""}">
     ${deleteBtnHTML}
     <div class="card-top">
       <div class="avatar" style="background:${a.color}">${initials(a.name)}</div>
       <div class="id-block">
         <div class="id-username">${email}</div>
-        <div class="id-name">${a.name}</div>
+        <div class="id-name">${a.name} ${inUseBadgeHTML}</div>
       </div>
     </div>
     <div class="status-line ${statusClass}">
@@ -807,7 +834,7 @@ function cardHTMLGemini(a){
     </div>
     <div class="actions">
       <button class="btn btn-key" id="gkey-${safe}">Edit API Key</button>
-      <button class="btn btn-copy" id="gcopy-${safe}" ${a.apiKey ? "" : "disabled"}>Salin</button>
+      <button class="${copyBtnClass}" id="gcopy-${safe}" ${a.apiKey ? "" : "disabled"}>${copyBtnLabel}</button>
     </div>
   </div>`;
 }
@@ -1202,14 +1229,24 @@ document.getElementById("apiKeyModalSaveBtn").onclick = () => {
 
 function copyApiKey(id){
   const key = state[id] && state[id].apiKey ? state[id].apiKey : "";
+  // Klik lagi saat sudah "Digunakan" → toggle off (tidak perlu salin ulang)
+  if(inUseAccounts.has(id)){
+    inUseAccounts.delete(id);
+    render();
+    return;
+  }
   if(!key) return;
   if(navigator.clipboard && navigator.clipboard.writeText){
     navigator.clipboard.writeText(key).then(() => {
-      flashCopyFeedback(id);
+      markInUse(id);
     }).catch(() => fallbackCopyApiKey(key, id));
   } else {
     fallbackCopyApiKey(key, id);
   }
+}
+function markInUse(id){
+  inUseAccounts.add(id);
+  render();
 }
 function fallbackCopyApiKey(text, id){
   const ta = document.createElement("textarea");
@@ -1220,14 +1257,11 @@ function fallbackCopyApiKey(text, id){
   ta.select();
   try{ document.execCommand("copy"); }catch(e){}
   document.body.removeChild(ta);
-  flashCopyFeedback(id);
+  markInUse(id);
 }
 function flashCopyFeedback(id){
-  const btn = document.getElementById(`gcopy-${cssSafe(id)}`);
-  if(!btn) return;
-  const original = btn.textContent;
-  btn.textContent = "Tersalin!";
-  setTimeout(() => { if(document.body.contains(btn)) btn.textContent = original; }, 1200);
+  // Masih ada untuk backward-compat, tidak dipakai aktif lagi
+  markInUse(id);
 }
 
 /* =========================================================
