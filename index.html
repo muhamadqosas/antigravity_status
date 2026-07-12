@@ -197,6 +197,13 @@
 
   .target-line{ font-size:11px; color:var(--text-dim); font-family:'Space Mono',monospace; font-weight:500; }
 
+  .ide-sublabel{
+    font-family:'Space Mono',monospace; font-size:10.5px; letter-spacing:0.6px;
+    text-transform:uppercase; color:var(--violet); font-weight:700;
+    margin-top:2px; padding-top:6px; border-top:1px dashed var(--border);
+  }
+  .ide-sublabel:first-of-type{ border-top:none; padding-top:0; }
+
   .actions{ display:flex; gap:6px; }
   .btn{
     flex:1; font-family:'Inter',sans-serif; font-size:11.5px; font-weight:600;
@@ -334,7 +341,8 @@
 
 <div class="tab-bar">
   <div class="tab-bar-inner">
-    <button class="tab-btn active" data-tab="antigravity" id="tabAntigravity">Antigravity</button>
+    <button class="tab-btn active" data-tab="antigravity" id="tabAntigravity">Antigravity CLI</button>
+    <button class="tab-btn" data-tab="antigravity-ide" id="tabAntigravityIde">Antigravity IDE</button>
     <button class="tab-btn" data-tab="gemini" id="tabGemini">Gemini CLI</button>
   </div>
 </div>
@@ -396,9 +404,12 @@
     <label class="modal-label" for="newAccName">Nama tampilan</label>
     <input type="text" id="newAccName" placeholder="contoh: Qosas Wardani" autocomplete="off">
     <label class="modal-label">Tampilkan di tab</label>
-    <div style="display:flex; gap:14px; margin:2px 0 4px;">
+    <div style="display:flex; gap:14px; margin:2px 0 4px; flex-wrap:wrap;">
       <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text); cursor:pointer;">
-        <input type="checkbox" id="newAccTabAntigravity" checked> Antigravity
+        <input type="checkbox" id="newAccTabAntigravity" checked> Antigravity CLI
+      </label>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text); cursor:pointer;">
+        <input type="checkbox" id="newAccTabIde" checked> Antigravity IDE
       </label>
       <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text); cursor:pointer;">
         <input type="checkbox" id="newAccTabGemini" checked> Gemini CLI
@@ -468,6 +479,7 @@ const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${CONFIG.BIN_ID}`;
 const SYNC_INTERVAL_MS = 20000;
 const RESET_DAYS = 7;
 const GEMINI_RESET_DAYS = 1;
+const IDE_RESET_DAYS = 7;
 const LOCAL_CACHE_KEY = "account_grid_cache_v1";
 
 /* =========================================================
@@ -517,9 +529,10 @@ function saveDeletedBaseIds(list){
   try{ localStorage.setItem(DELETED_BASE_ACCOUNTS_KEY, JSON.stringify(list)); }catch(e){}
 }
 
-// accountTabs[id] = { antigravity: bool, gemini: bool } -> menentukan akun ini
-// tampil di tab mana. Akun yang belum punya entry dianggap tampil di kedua tab
-// (supaya akun lama / bawaan tetap kompatibel seperti sebelumnya).
+// accountTabs[id] = { antigravity: bool, "antigravity-ide": bool, gemini: bool } -> menentukan akun ini
+// tampil di tab mana. Akun yang belum punya entry dianggap tampil di SEMUA tab
+// (supaya akun lama / bawaan tetap kompatibel, dan otomatis "ter-copy" ke tab
+// Antigravity IDE yang baru tanpa perlu migrasi data manual).
 function loadAccountTabs(){
   try{
     const raw = localStorage.getItem(ACCOUNT_TABS_KEY);
@@ -532,8 +545,17 @@ function saveAccountTabs(obj){
 }
 function getAccountTabs(id){
   const t = accountTabs[id];
-  if(!t) return { antigravity:true, gemini:true };
-  return { antigravity: t.antigravity !== false, gemini: t.gemini !== false };
+  if(!t) return { antigravity:true, gemini:true, "antigravity-ide":true };
+  return {
+    antigravity: t.antigravity !== false,
+    gemini: t.gemini !== false,
+    "antigravity-ide": t["antigravity-ide"] !== false
+  };
+}
+function tabLabel(tab){
+  if(tab === "gemini") return "Gemini CLI";
+  if(tab === "antigravity-ide") return "Antigravity IDE";
+  return "Antigravity CLI";
 }
 
 let customAccounts = loadCustomAccounts();
@@ -553,23 +575,26 @@ function addNewAccount(username, displayName, tabsSelected){
   saveCustomAccounts(customAccounts);
   accountTabs[id] = {
     antigravity: !!(tabsSelected && tabsSelected.antigravity),
-    gemini: !!(tabsSelected && tabsSelected.gemini)
+    gemini: !!(tabsSelected && tabsSelected.gemini),
+    "antigravity-ide": !!(tabsSelected && tabsSelected.ide)
   };
   saveAccountTabs(accountTabs);
   rebuildAccounts();
-  if(!state[id]) state[id] = { target: null, geminiTarget: null, apiKey: "" };
+  if(!state[id]) state[id] = defaultStateEntry();
   saveLocalCache();
 }
 
 // Hapus akun HANYA dari tab yang sedang aktif. Kalau akun jadi tidak
-// tampil di tab manapun (sudah dihapus dari keduanya), baru akun +
-// data cooldown-nya dihapus permanen.
+// tampil di tab manapun (sudah dihapus dari ketiga tab), baru akun +
+// data cooldown-nya dihapus permanen. Sistem tiap tab independen:
+// hapus dari 1 tab tidak memengaruhi tab lain selama akun masih
+// terdaftar tampil di tab tersebut.
 function deleteAccountFromTab(id, tab){
   const current = getAccountTabs(id);
   const updated = { ...current, [tab]: false };
   accountTabs[id] = updated;
 
-  if(!updated.antigravity && !updated.gemini){
+  if(!updated.antigravity && !updated.gemini && !updated["antigravity-ide"]){
     const customIdx = customAccounts.findIndex(a => a.id === id);
     if(customIdx !== -1){
       customAccounts.splice(customIdx, 1);
@@ -597,12 +622,17 @@ let modalTargetId = null;
 let deleteMode = false;
 let deleteTargetId = null;
 let cancelTargetId = null;
-let currentTab = "antigravity"; // "antigravity" | "gemini"
+let currentTab = "antigravity"; // "antigravity" | "antigravity-ide" | "gemini"
 let apiKeyTargetId = null;
+let cancelTargetKind = null; // "gemini" | "ide-gemini" | "ide-claude" | undefined (antigravity)
+
+function defaultStateEntry(){
+  return { target: null, geminiTarget: null, apiKey: "", ideGeminiTarget: null, ideClaudeTarget: null };
+}
 
 function initialState(){
   const s = {};
-  ACCOUNTS.forEach(a => s[a.id] = { target: null, geminiTarget: null, apiKey: "" });
+  ACCOUNTS.forEach(a => s[a.id] = defaultStateEntry());
   return s;
 }
 
@@ -635,6 +665,20 @@ function fmtTargetDate(ts){
 /* =========================================================
    RENDER
    ========================================================= */
+function isAccountReady(id, tab, now){
+  const s = state[id] || {};
+  if(tab === "antigravity-ide"){
+    const g = s.ideGeminiTarget || null;
+    const c = s.ideClaudeTarget || null;
+    const gReady = !g || (g - now) <= 0;
+    const cReady = !c || (c - now) <= 0;
+    return gReady && cReady;
+  }
+  const field = targetField(tab);
+  const t = s[field] || null;
+  return !t || (t - now) <= 0;
+}
+
 function render(){
   const now = Date.now();
   const grid = document.getElementById("grid");
@@ -644,10 +688,22 @@ function render(){
   const visibleAccounts = ACCOUNTS.filter(a => getAccountTabs(a.id)[currentTab]);
 
   let list = visibleAccounts.map(a => {
-    const target = state[a.id] ? state[a.id][field] : null;
+    const s = state[a.id] || {};
+    if(currentTab === "antigravity-ide"){
+      const gTarget = s.ideGeminiTarget || null;
+      const cTarget = s.ideClaudeTarget || null;
+      const gRemaining = gTarget ? gTarget - now : 0;
+      const cRemaining = cTarget ? cTarget - now : 0;
+      const gReady = !gTarget || gRemaining <= 0;
+      const cReady = !cTarget || cRemaining <= 0;
+      const isReady = gReady && cReady;
+      const remaining = Math.max(gReady ? 0 : gRemaining, cReady ? 0 : cRemaining);
+      return { ...a, gTarget, cTarget, gRemaining, cRemaining, gReady, cReady, isReady, remaining };
+    }
+    const target = s[field] || null;
     const remaining = target ? target - now : 0;
     const isReady = !target || remaining <= 0;
-    const apiKey = state[a.id] ? (state[a.id].apiKey || "") : "";
+    const apiKey = s.apiKey || "";
     return { ...a, target, remaining, isReady, apiKey };
   });
 
@@ -667,17 +723,15 @@ function render(){
     return a.remaining - b.remaining;
   });
 
-  document.getElementById("statReady").textContent = visibleAccounts.filter(a=>{
-    const t = state[a.id] ? state[a.id][field] : null;
-    return !t || (t - now) <= 0;
-  }).length;
-  document.getElementById("statWaiting").textContent = visibleAccounts.filter(a=>{
-    const t = state[a.id] ? state[a.id][field] : null;
-    return t && (t - now) > 0;
-  }).length;
+  document.getElementById("statReady").textContent = visibleAccounts.filter(a => isAccountReady(a.id, currentTab, now)).length;
+  document.getElementById("statWaiting").textContent = visibleAccounts.filter(a => !isAccountReady(a.id, currentTab, now)).length;
 
   emptyState.style.display = list.length ? "none" : "block";
-  grid.innerHTML = list.map(a => currentTab === "gemini" ? cardHTMLGemini(a) : cardHTML(a)).join("");
+  grid.innerHTML = list.map(a => {
+    if(currentTab === "gemini") return cardHTMLGemini(a);
+    if(currentTab === "antigravity-ide") return cardHTMLIde(a);
+    return cardHTML(a);
+  }).join("");
 
   // bind buttons
   list.forEach(a => {
@@ -691,9 +745,18 @@ function render(){
       const keyBtn = document.getElementById(`gkey-${safe}`);
       const copyBtn = document.getElementById(`gcopy-${safe}`);
       if(limitBtn) limitBtn.onclick = () => setLimit(a.id);
-      if(cancelBtn) cancelBtn.onclick = () => openCancelConfirm(a.id);
+      if(cancelBtn) cancelBtn.onclick = () => openCancelConfirm(a.id, "gemini");
       if(keyBtn) keyBtn.onclick = () => openApiKeyModal(a.id);
       if(copyBtn) copyBtn.onclick = () => copyApiKey(a.id);
+    } else if(currentTab === "antigravity-ide"){
+      const gLimitBtn = document.getElementById(`idegl-${safe}`);
+      const gCancelBtn = document.getElementById(`idegc-${safe}`);
+      const cLimitBtn = document.getElementById(`idecl-${safe}`);
+      const cCancelBtn = document.getElementById(`idecc-${safe}`);
+      if(gLimitBtn) gLimitBtn.onclick = () => setIdeLimit(a.id, "gemini");
+      if(gCancelBtn) gCancelBtn.onclick = () => openCancelConfirm(a.id, "ide-gemini");
+      if(cLimitBtn) cLimitBtn.onclick = () => setIdeLimit(a.id, "claude");
+      if(cCancelBtn) cCancelBtn.onclick = () => openCancelConfirm(a.id, "ide-claude");
     } else {
       const manualBtn = document.getElementById(`manual-${safe}`);
       const cancelBtn = document.getElementById(`cancel-${safe}`);
@@ -749,6 +812,70 @@ function cardHTMLGemini(a){
   </div>`;
 }
 
+function cardHTMLIde(a){
+  const safe = cssSafe(a.id);
+  const email = a.id + "@gmail.com";
+  const deleteBtnHTML = deleteMode
+    ? `<button class="delete-account-btn" id="del-${safe}" title="Hapus akun ini">🗑</button>`
+    : "";
+
+  const gStatusClass = a.gReady ? "status-ready" : "status-waiting";
+  const gValueText = a.gReady ? "READY" : fmtCountdown(a.gRemaining);
+  const gBadgeText = a.gReady ? "SIAP PAKAI" : "COOLDOWN";
+  const gTargetLine = a.gTarget
+    ? (a.gReady ? `Selesai: ${fmtTargetDate(a.gTarget)}` : `Refresh: ${fmtTargetDate(a.gTarget)}`)
+    : "Belum ada limit tercatat";
+
+  const cStatusClass = a.cReady ? "status-ready" : "status-waiting";
+  const cValueText = a.cReady ? "READY" : fmtCountdown(a.cRemaining);
+  const cBadgeText = a.cReady ? "SIAP PAKAI" : "COOLDOWN";
+  const cTargetLine = a.cTarget
+    ? (a.cReady ? `Selesai: ${fmtTargetDate(a.cTarget)}` : `Refresh: ${fmtTargetDate(a.cTarget)}`)
+    : "Belum ada limit tercatat";
+
+  const overallStatusClass = a.isReady ? "status-ready" : "status-waiting";
+
+  return `
+  <div class="card ${overallStatusClass} ${deleteMode ? "delete-mode" : ""}">
+    ${deleteBtnHTML}
+    <div class="card-top">
+      <div class="avatar" style="background:${a.color}">${initials(a.name)}</div>
+      <div class="id-block">
+        <div class="id-username">${email}</div>
+        <div class="id-name">${a.name}</div>
+      </div>
+    </div>
+
+    <div class="ide-sublabel">Gemini Models</div>
+    <div class="status-line ${gStatusClass}">
+      <div>
+        <div class="status-label">weekly limit</div>
+        <div class="status-value">${gValueText}</div>
+      </div>
+      <div class="status-badge">${gBadgeText}</div>
+    </div>
+    <div class="target-line">${gTargetLine}</div>
+    <div class="actions">
+      <button class="btn btn-manual" id="idegl-${safe}">Limit 7 Hari</button>
+      <button class="btn btn-cancel" id="idegc-${safe}" ${a.gReady ? "disabled" : ""}>Batal</button>
+    </div>
+
+    <div class="ide-sublabel">Claude &amp; GPT Models</div>
+    <div class="status-line ${cStatusClass}">
+      <div>
+        <div class="status-label">weekly limit</div>
+        <div class="status-value">${cValueText}</div>
+      </div>
+      <div class="status-badge">${cBadgeText}</div>
+    </div>
+    <div class="target-line">${cTargetLine}</div>
+    <div class="actions">
+      <button class="btn btn-manual" id="idecl-${safe}">Limit 7 Hari</button>
+      <button class="btn btn-cancel" id="idecc-${safe}" ${a.cReady ? "disabled" : ""}>Batal</button>
+    </div>
+  </div>`;
+}
+
 function cssSafe(id){ return id.replace(/[^a-zA-Z0-9]/g,"_"); }
 
 function cardHTML(a){
@@ -793,7 +920,7 @@ function cardHTML(a){
    ACTIONS
    ========================================================= */
 function setLimit(id){
-  if(!state[id]) state[id] = { target: null, geminiTarget: null, apiKey: "" };
+  if(!state[id]) state[id] = defaultStateEntry();
   if(currentTab === "gemini"){
     state[id].geminiTarget = Date.now() + GEMINI_RESET_DAYS * 86400000;
   } else {
@@ -803,10 +930,28 @@ function setLimit(id){
   persist();
 }
 
-function cancelCountdown(id){
-  if(!state[id]) state[id] = { target: null, geminiTarget: null, apiKey: "" };
-  if(currentTab === "gemini"){
+function setIdeLimit(id, which){
+  if(!state[id]) state[id] = defaultStateEntry();
+  if(which === "gemini"){
+    state[id].ideGeminiTarget = Date.now() + IDE_RESET_DAYS * 86400000;
+  } else {
+    state[id].ideClaudeTarget = Date.now() + IDE_RESET_DAYS * 86400000;
+  }
+  render();
+  persist();
+}
+
+// kind: "gemini" (tab Gemini CLI), "ide-gemini" / "ide-claude" (tab Antigravity IDE),
+// atau undefined/lainnya untuk tab Antigravity CLI. Tiap kind menyimpan ke field
+// state yang berbeda sehingga sistem tiap tab benar-benar independen.
+function cancelCountdown(id, kind){
+  if(!state[id]) state[id] = defaultStateEntry();
+  if(kind === "gemini"){
     state[id].geminiTarget = null;
+  } else if(kind === "ide-gemini"){
+    state[id].ideGeminiTarget = null;
+  } else if(kind === "ide-claude"){
+    state[id].ideClaudeTarget = null;
   } else {
     state[id].target = null;
   }
@@ -889,7 +1034,7 @@ document.getElementById("modalSaveBtn").onclick = () => {
   const val = document.getElementById("manualDateInput").value;
   if(!val) return;
   const ts = new Date(val).getTime();
-  if(!state[modalTargetId]) state[modalTargetId] = { target: null, geminiTarget: null, apiKey: "" };
+  if(!state[modalTargetId]) state[modalTargetId] = defaultStateEntry();
   state[modalTargetId].target = ts;
   closeModal();
   render();
@@ -904,6 +1049,7 @@ function openAddAccountModal(){
   document.getElementById("newAccName").value = "";
   // default: tab yang lagi aktif otomatis dicentang, tab lain kosong
   document.getElementById("newAccTabAntigravity").checked = (currentTab === "antigravity");
+  document.getElementById("newAccTabIde").checked = (currentTab === "antigravity-ide");
   document.getElementById("newAccTabGemini").checked = (currentTab === "gemini");
   setAddModalError("");
   document.getElementById("addModalOverlay").classList.add("open");
@@ -944,12 +1090,13 @@ document.getElementById("addModalSaveBtn").onclick = () => {
     return;
   }
   const wantAntigravity = document.getElementById("newAccTabAntigravity").checked;
+  const wantIde = document.getElementById("newAccTabIde").checked;
   const wantGemini = document.getElementById("newAccTabGemini").checked;
-  if(!wantAntigravity && !wantGemini){
-    setAddModalError("Pilih minimal satu tab (Antigravity atau Gemini CLI).");
+  if(!wantAntigravity && !wantIde && !wantGemini){
+    setAddModalError("Pilih minimal satu tab (Antigravity CLI, Antigravity IDE, atau Gemini CLI).");
     return;
   }
-  addNewAccount(username, name, { antigravity: wantAntigravity, gemini: wantGemini });
+  addNewAccount(username, name, { antigravity: wantAntigravity, ide: wantIde, gemini: wantGemini });
   closeAddAccountModal();
   render();
   persist();
@@ -970,11 +1117,10 @@ function openDeleteConfirm(id){
   if(!acc) return;
   document.getElementById("deleteConfirmSub").textContent = acc.id + "@gmail.com";
   const tabs = getAccountTabs(id);
-  const otherTab = currentTab === "gemini" ? "antigravity" : "gemini";
-  const otherTabLabel = otherTab === "gemini" ? "Gemini CLI" : "Antigravity";
-  const willStillExist = tabs[otherTab];
-  document.getElementById("deleteConfirmBox").textContent = willStillExist
-    ? `Akun ini hanya akan dihapus dari tab ${currentTab === "gemini" ? "Gemini CLI" : "Antigravity"}. Akun tetap muncul di tab ${otherTabLabel}.`
+  const allTabs = ["antigravity", "antigravity-ide", "gemini"];
+  const otherTabsStillVisible = allTabs.filter(t => t !== currentTab && tabs[t]);
+  document.getElementById("deleteConfirmBox").textContent = otherTabsStillVisible.length
+    ? `Akun ini hanya akan dihapus dari tab ${tabLabel(currentTab)}. Akun tetap muncul di tab ${otherTabsStillVisible.map(tabLabel).join(" & ")}.`
     : "Akun ini tidak terdaftar di tab lain, jadi akun beserta data cooldown-nya akan dihapus permanen.";
   document.getElementById("deleteConfirmOverlay").classList.add("open");
 }
@@ -997,16 +1143,21 @@ document.getElementById("deleteConfirmYesBtn").onclick = () => {
 /* =========================================================
    KONFIRMASI BATAL COOLDOWN
    ========================================================= */
-function openCancelConfirm(id){
+function openCancelConfirm(id, kind){
   cancelTargetId = id;
+  cancelTargetKind = kind;
   const acc = ACCOUNTS.find(a => a.id === id);
   if(!acc) return;
-  document.getElementById("cancelConfirmSub").textContent = acc.id + "@gmail.com";
+  let sub = acc.id + "@gmail.com";
+  if(kind === "ide-gemini") sub += " · Gemini Models";
+  if(kind === "ide-claude") sub += " · Claude & GPT Models";
+  document.getElementById("cancelConfirmSub").textContent = sub;
   document.getElementById("cancelConfirmOverlay").classList.add("open");
 }
 function closeCancelConfirm(){
   document.getElementById("cancelConfirmOverlay").classList.remove("open");
   cancelTargetId = null;
+  cancelTargetKind = null;
 }
 document.getElementById("cancelConfirmCancelBtn").onclick = closeCancelConfirm;
 document.getElementById("cancelConfirmOverlay").addEventListener("click", (e) => {
@@ -1014,7 +1165,7 @@ document.getElementById("cancelConfirmOverlay").addEventListener("click", (e) =>
 });
 document.getElementById("cancelConfirmYesBtn").onclick = () => {
   if(!cancelTargetId) return;
-  cancelCountdown(cancelTargetId);
+  cancelCountdown(cancelTargetId, cancelTargetKind);
   closeCancelConfirm();
 };
 
@@ -1042,7 +1193,7 @@ document.getElementById("apiKeyModalOverlay").addEventListener("click", (e) => {
 document.getElementById("apiKeyModalSaveBtn").onclick = () => {
   if(!apiKeyTargetId) return;
   const val = document.getElementById("apiKeyInput").value.trim();
-  if(!state[apiKeyTargetId]) state[apiKeyTargetId] = { target: null, geminiTarget: null, apiKey: "" };
+  if(!state[apiKeyTargetId]) state[apiKeyTargetId] = defaultStateEntry();
   state[apiKeyTargetId].apiKey = val;
   closeApiKeyModal();
   render();
@@ -1193,6 +1344,8 @@ async function syncFromCloud(){
         merged[a.id] = cloudState[a.id];
         if(merged[a.id].geminiTarget === undefined) merged[a.id].geminiTarget = null;
         if(merged[a.id].apiKey === undefined) merged[a.id].apiKey = "";
+        if(merged[a.id].ideGeminiTarget === undefined) merged[a.id].ideGeminiTarget = null;
+        if(merged[a.id].ideClaudeTarget === undefined) merged[a.id].ideClaudeTarget = null;
       }
     });
     state = merged;
@@ -1210,9 +1363,11 @@ async function init(){
   const cached = loadLocalCache();
   state = cached || initialState();
   ACCOUNTS.forEach(a => {
-    if(!state[a.id]) state[a.id] = { target: null, geminiTarget: null, apiKey: "" };
+    if(!state[a.id]) state[a.id] = defaultStateEntry();
     if(state[a.id].geminiTarget === undefined) state[a.id].geminiTarget = null;
     if(state[a.id].apiKey === undefined) state[a.id].apiKey = "";
+    if(state[a.id].ideGeminiTarget === undefined) state[a.id].ideGeminiTarget = null;
+    if(state[a.id].ideClaudeTarget === undefined) state[a.id].ideClaudeTarget = null;
   });
 
   render();
